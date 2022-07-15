@@ -1,6 +1,7 @@
 import copy
 import functools
 import os
+import deepspeed
 
 import blobfile as bf
 import torch as th
@@ -66,17 +67,14 @@ class TrainLoop:
         self.sync_cuda = th.cuda.is_available()
 
         self._load_and_sync_parameters()
-        self.mp_trainer = MixedPrecisionTrainer(
-            model=self.model,
-            use_fp16=self.use_fp16,
-            fp16_scale_growth=fp16_scale_growth,
-        )
+        #self.mp_trainer = MixedPrecisionTrainer(
+            #model=self.model,
+            #use_fp16=self.use_fp16,
+            #fp16_scale_growth=fp16_scale_growth,
+        #)
+        self.model_params = list(model.parameters())
 
-        self.opt = AdamW(
-            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
-        )
         if self.resume_step:
-            self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
             # being specified at the command line.
             self.ema_params = [
@@ -84,28 +82,29 @@ class TrainLoop:
             ]
         else:
             self.ema_params = [
-                copy.deepcopy(self.mp_trainer.master_params)
+                copy.deepcopy(self.model_params)
                 for _ in range(len(self.ema_rate))
             ]
+        self.ddp_model = model
 
-        if th.cuda.is_available():
-            self.use_ddp = True
-            self.ddp_model = DDP(
-                self.model,
-                device_ids=[dist_util.dev()],
-                output_device=dist_util.dev(),
-                broadcast_buffers=False,
-                bucket_cap_mb=128,
-                find_unused_parameters=False,
-            )
-        else:
-            if dist.get_world_size() > 1:
-                logger.warn(
-                    "Distributed training requires CUDA. "
-                    "Gradients will not be synchronized properly!"
-                )
-            self.use_ddp = False
-            self.ddp_model = self.model
+        #if th.cuda.is_available():
+            #self.use_ddp = True
+            #self.ddp_model = DDP(
+                #self.model,
+                #device_ids=[dist_util.dev()],
+                #output_device=dist_util.dev(),
+                #broadcast_buffers=False,
+                #bucket_cap_mb=128,
+                #find_unused_parameters=False,
+            #)
+        #else:
+            #if dist.get_world_size() > 1:
+                #logger.warn(
+                    #"Distributed training requires CUDA. "
+                    #"Gradients will not be synchronized properly!"
+                #)
+            #self.use_ddp = False
+            #self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -123,7 +122,7 @@ class TrainLoop:
         dist_util.sync_params(self.model.parameters())
 
     def _load_ema_parameters(self, rate):
-        ema_params = copy.deepcopy(self.mp_trainer.master_params)
+        ema_params = copy.deepcopy(self.model_params)
 
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
@@ -133,22 +132,11 @@ class TrainLoop:
                 state_dict = dist_util.load_state_dict(
                     ema_checkpoint, map_location=dist_util.dev()
                 )
-                ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
+                #ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
+                #TODO
 
         dist_util.sync_params(ema_params)
         return ema_params
-
-    def _load_optimizer_state(self):
-        main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-        opt_checkpoint = bf.join(
-            bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt"
-        )
-        if bf.exists(opt_checkpoint):
-            logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-            state_dict = dist_util.load_state_dict(
-                opt_checkpoint, map_location=dist_util.dev()
-            )
-            self.opt.load_state_dict(state_dict)
 
     def run_loop(self):
         while (
@@ -171,14 +159,14 @@ class TrainLoop:
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
-        took_step = self.mp_trainer.optimize(self.opt)
-        if took_step:
-            self._update_ema()
-        self._anneal_lr()
+        #took_step = self.mp_trainer.optimize(self.opt)
+        self.ddp_model.step()
+
+        self._update_ema()
         self.log_step()
 
     def forward_backward(self, batch, cond):
-        self.mp_trainer.zero_grad()
+        # self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = {
@@ -196,11 +184,7 @@ class TrainLoop:
                 model_kwargs=micro_cond,
             )
 
-            if last_batch or not self.use_ddp:
-                losses = compute_losses()
-            else:
-                with self.ddp_model.no_sync():
-                    losses = compute_losses()
+            losses = compute_losses()
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
@@ -211,46 +195,31 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
-            self.mp_trainer.backward(loss)
+            self.ddp_model.backward(loss)
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
-            update_ema(params, self.mp_trainer.master_params, rate=rate)
-
-    def _anneal_lr(self):
-        if not self.lr_anneal_steps:
-            return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
-        lr = self.lr * (1 - frac_done)
-        for param_group in self.opt.param_groups:
-            param_group["lr"] = lr
+            update_ema(params, self.model_params, rate=rate)
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
 
     def save(self):
-        def save_checkpoint(rate, params):
-            state_dict = self.mp_trainer.master_params_to_state_dict(params)
-            if dist.get_rank() == 0:
-                logger.log(f"saving model {rate}...")
-                if not rate:
-                    filename = f"model{(self.step+self.resume_step):06d}.pt"
-                else:
-                    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                    th.save(state_dict, f)
+        #def save_checkpoint(rate, params):
+            #state_dict = self.mp_trainer.master_params_to_state_dict(params)
+            #if dist.get_rank() == 0:
+                #logger.log(f"saving model {rate}...")
+                #if not rate:
+                    #filename = f"model{(self.step+self.resume_step):06d}.pt"
+                #else:
+                    #filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
+                #with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                    #th.save(state_dict, f)
 
-        save_checkpoint(0, self.mp_trainer.master_params)
-        for rate, params in zip(self.ema_rate, self.ema_params):
-            save_checkpoint(rate, params)
-
-        if dist.get_rank() == 0:
-            with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
-                "wb",
-            ) as f:
-                th.save(self.opt.state_dict(), f)
+        self.ddp_model.save_checkpoint(get_blob_logdir())
+        #for rate, params in zip(self.ema_rate, self.ema_params):
+            #save_checkpoint(rate, params)
 
         dist.barrier()
 

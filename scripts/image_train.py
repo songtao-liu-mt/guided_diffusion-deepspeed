@@ -15,18 +15,22 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.train_util import TrainLoop
 
+import deepspeed
+
 
 def main():
     args = create_argparser().parse_args()
 
-    dist_util.setup_dist()
+    #dist_util.setup_dist()
+    deepspeed.init_distributed()
     logger.configure()
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    model.to(dist_util.dev())
+    params = model.parameters()
+    model, optimizer, _, _ = deepspeed.initialize(args=args, model=model, model_parameters=params)
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("creating data loader...")
@@ -72,10 +76,12 @@ def create_argparser():
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,
+        local_rank=-1,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
+    parser = deepspeed.add_config_arguments(parser)
     return parser
 
 
