@@ -66,7 +66,7 @@ class TrainLoop:
 
         self.sync_cuda = th.cuda.is_available()
 
-        self._load_and_sync_parameters()
+        #self._load_and_sync_parameters()
         #self.mp_trainer = MixedPrecisionTrainer(
             #model=self.model,
             #use_fp16=self.use_fp16,
@@ -217,11 +217,12 @@ class TrainLoop:
                 #with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     #th.save(state_dict, f)
 
-        self.ddp_model.save_checkpoint(get_blob_logdir())
+        #self.ddp_model.save_checkpoint(get_blob_logdir())
         #for rate, params in zip(self.ema_rate, self.ema_params):
             #save_checkpoint(rate, params)
 
-        dist.barrier()
+        #dist.barrier()
+        pass
 
 
 def parse_resume_step_from_filename(filename):
