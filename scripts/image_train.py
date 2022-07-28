@@ -15,13 +15,14 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.train_util import TrainLoop
 
+import torch
 import deepspeed
 
 
 def main():
     args = create_argparser().parse_args()
 
-    #dist_util.setup_dist()
+    dist_util.set_env()
     deepspeed.init_distributed()
     logger.configure()
 
@@ -29,6 +30,11 @@ def main():
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
+    if args.pretrain_weights:
+        logger.log("loading pretrained model weights for finetuning...")
+        weights = torch.load(args.pretrain_weights, map_location='cpu')
+        model.load_state_dict(weights)
+
     params = model.parameters()
     model, optimizer, _, _ = deepspeed.initialize(args=args, model=model, model_parameters=params)
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
@@ -71,14 +77,32 @@ def create_argparser():
         batch_size=1,
         microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=10,
-        save_interval=10000,
+        log_interval=20,
+        save_interval=100,
         resume_checkpoint="",
+        #pretrain_weights="weights/256x256_diffusion_uncond.pt",
+        pretrain_weights="weights/512x512_diffusion_uncond_finetune_008100.pt",
         use_fp16=False,
         fp16_scale_growth=1e-3,
         local_rank=-1,
     )
     defaults.update(model_and_diffusion_defaults())
+    defaults.update({
+        'attention_resolutions': '32, 16, 8',
+        'class_cond': False,
+        'diffusion_steps': 1000, #No need to edit this, it is taken care of later.
+        'image_size': 512,
+        'learn_sigma': True,
+        'noise_schedule': 'linear',
+        'num_channels': 256,
+        'num_head_channels': 64,
+        'num_res_blocks': 2,
+        'resblock_updown': True,
+        'use_fp16': True,
+        'use_scale_shift_norm': True,
+        'pretrain_weights': "weights/512x512_diffusion_uncond_finetune_008100.pt",
+        'batch_size': 6,
+    })
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     parser = deepspeed.add_config_arguments(parser)

@@ -16,6 +16,46 @@ GPUS_PER_NODE = 8
 
 SETUP_RETRY_COUNT = 3
 
+def setup_dist():
+    """
+    Setup a distributed process group.
+    """
+    if dist.is_initialized():
+        return
+    #os.environ["CUDA_VISIBLE_DEVICES"] = f"{MPI.COMM_WORLD.Get_rank() % GPUS_PER_NODE}"
+
+    #comm = MPI.COMM_WORLD
+    backend = "gloo" if not th.cuda.is_available() else "nccl"
+
+    if backend == "gloo":
+        hostname = "localhost"
+    else:
+        hostname = socket.gethostbyname(socket.getfqdn())
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["RANK"] = "0"
+    os.environ["WORLD_SIZE"] = "1"
+
+    port = _find_free_port()
+    os.environ["MASTER_PORT"] = str(port)
+    dist.init_process_group(backend=backend, init_method="env://")
+
+def set_env():
+    #os.environ["NCCL_DEBUG"] = "INFO"
+
+#    os.environ["NCCL_SOCKET_IFNAME"] = "ib,eth,en,em,bond"
+#    os.environ["GLOO_SOCKET_IFNAME"] = "eth"
+    os.environ["NCCL_IB_DISABLE"] = "0"
+    os.environ["NCCL_SHM_DISABLE"] = "0"
+
+    #os.environ["NCCL_IB_CUDA_SUPPORT"] = "1"
+    #os.environ["NCCL_NET_GDR_READ"] = "1"
+
+    os.environ["NCCL_LAUNCH_MODE"] = "PARALLEL"
+    os.environ["NCCL_IB_HCA"] = "mlx5_1:1"
+    #os.environ["NCCL_IB_GID_INDEX"] = "3"
+    #os.environ["NCCL_IB_TC"] = "106"
+    os.environ["NCCL_NET"] = "IB"
+
 
 
 def dev():

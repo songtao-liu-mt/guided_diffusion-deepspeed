@@ -5,6 +5,7 @@ numpy array. This can be used to produce samples for FID evaluation.
 
 import argparse
 import os
+import cv2
 
 import numpy as np
 import torch as th
@@ -24,17 +25,18 @@ def main():
     args = create_argparser().parse_args()
 
     dist_util.setup_dist()
-    logger.configure()
+    logger.configure(dir='logs/sampling/')
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.load_state_dict(
-        dist_util.load_state_dict(args.model_path, map_location="cpu")
+        th.load(args.model_path, map_location="cpu")['module']
     )
     model.to(dist_util.dev())
     if args.use_fp16:
+        logger.log('Using FP16 model for sampling')
         model.convert_to_fp16()
     model.eval()
 
@@ -85,9 +87,17 @@ def main():
             np.savez(out_path, arr, label_arr)
         else:
             np.savez(out_path, arr)
+        vis_images(arr, logger.get_dir())
 
     dist.barrier()
     logger.log("sampling complete")
+
+
+def vis_images(arr, out_path):
+    for i in range(arr.shape[0]):
+        img = arr[i][:, :, ::-1]
+        file_name = f"{i}.png"
+        cv2.imwrite(os.path.join(out_path, file_name), img)
 
 
 def create_argparser():

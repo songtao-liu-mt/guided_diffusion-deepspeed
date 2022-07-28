@@ -16,6 +16,8 @@ class SiLU(nn.Module):
 
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
+        #return super().forward(x)
+        self.float()
         return super().forward(x.float()).type(x.dtype)
 
 
@@ -98,6 +100,7 @@ def normalization(channels):
     :return: an nn.Module for normalization.
     """
     return GroupNorm32(32, channels)
+    #return nn.GroupNorm(32, channels)
 
 
 def timestep_embedding(timesteps, dim, max_period=10000):

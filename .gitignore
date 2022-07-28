@@ -3,4 +3,12 @@ __pycache__/
 classify_image_graph_def.pb
 logs/
 *.egg-info
+weights/
+evaluations/
+dist/
+datasets/
+build/
+hostfile.txt
+DG-Net/
+*.xml
 

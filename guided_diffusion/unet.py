@@ -622,6 +622,8 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
         self.output_blocks.apply(convert_module_to_f16)
+        self.time_embed.apply(convert_module_to_f16)
+        self.out.apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
         """
@@ -630,6 +632,8 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
+        self.time_embed.apply(convert_module_to_f32)
+        self.out.apply(convert_module_to_f32)
 
     def forward(self, x, timesteps, y=None):
         """
@@ -645,7 +649,7 @@ class UNetModel(nn.Module):
         ), "must specify y if and only if the model is class-conditional"
 
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels).type(self.dtype))
 
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
@@ -659,7 +663,7 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
-        h = h.type(x.dtype)
+        h = h.type(self.dtype)
         return self.out(h)
 
 
@@ -876,7 +880,7 @@ class EncoderUNetModel(nn.Module):
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x K] Tensor of outputs.
         """
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels).type(self.dtype))
 
         results = []
         h = x.type(self.dtype)

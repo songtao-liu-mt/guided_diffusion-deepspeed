@@ -65,8 +65,9 @@ class TrainLoop:
         self.global_batch = self.batch_size * dist.get_world_size()
 
         self.sync_cuda = th.cuda.is_available()
+        self.ddp_model = model
 
-        #self._load_and_sync_parameters()
+        self._load_parameters()
         #self.mp_trainer = MixedPrecisionTrainer(
             #model=self.model,
             #use_fp16=self.use_fp16,
@@ -74,18 +75,18 @@ class TrainLoop:
         #)
         self.model_params = list(model.parameters())
 
-        if self.resume_step:
-            # Model was resumed, either due to a restart or a checkpoint
-            # being specified at the command line.
-            self.ema_params = [
-                self._load_ema_parameters(rate) for rate in self.ema_rate
-            ]
-        else:
-            self.ema_params = [
-                copy.deepcopy(self.model_params)
-                for _ in range(len(self.ema_rate))
-            ]
-        self.ddp_model = model
+        #if self.resume_step:
+            ## Model was resumed, either due to a restart or a checkpoint
+            ## being specified at the command line.
+            #self.ema_params = [
+                #self._load_ema_parameters(rate) for rate in self.ema_rate
+            #]
+        #else:
+            #self.ema_params = [
+                #copy.deepcopy(self.model_params)
+                #for _ in range(len(self.ema_rate))
+            #]
+
 
         #if th.cuda.is_available():
             #self.use_ddp = True
@@ -106,37 +107,15 @@ class TrainLoop:
             #self.use_ddp = False
             #self.ddp_model = self.model
 
-    def _load_and_sync_parameters(self):
+    def _load_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
 
         if resume_checkpoint:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            if dist.get_rank() == 0:
-                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
-                    dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
-                    )
-                )
+            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+            checkpoint_name, _ = self.ddp_model.load_checkpoint(resume_checkpoint, 
+                self.resume_step, load_module_only=self.resume_step==0)
 
-        dist_util.sync_params(self.model.parameters())
-
-    def _load_ema_parameters(self, rate):
-        ema_params = copy.deepcopy(self.model_params)
-
-        main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-        ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
-        if ema_checkpoint:
-            if dist.get_rank() == 0:
-                logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
-                state_dict = dist_util.load_state_dict(
-                    ema_checkpoint, map_location=dist_util.dev()
-                )
-                #ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
-                #TODO
-
-        dist_util.sync_params(ema_params)
-        return ema_params
 
     def run_loop(self):
         while (
@@ -159,10 +138,10 @@ class TrainLoop:
 
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
-        #took_step = self.mp_trainer.optimize(self.opt)
+        # took_step = self.mp_trainer.optimize(self.opt)
         self.ddp_model.step()
 
-        self._update_ema()
+        # self._update_ema()
         self.log_step()
 
     def forward_backward(self, batch, cond):
@@ -217,12 +196,11 @@ class TrainLoop:
                 #with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     #th.save(state_dict, f)
 
-        #self.ddp_model.save_checkpoint(get_blob_logdir())
+        self.ddp_model.save_checkpoint(get_blob_logdir(), str(self.step + self.resume_step))
         #for rate, params in zip(self.ema_rate, self.ema_params):
             #save_checkpoint(rate, params)
 
         #dist.barrier()
-        pass
 
 
 def parse_resume_step_from_filename(filename):
